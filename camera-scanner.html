@@ -13,8 +13,8 @@
       <div class="text-[11px] uppercase tracking-wider text-sky-300 font-semibold">External Camera Bridge</div>
       <h1 class="text-sm font-bold">Live Camera QR Scanner — Stock Opname</h1>
     </div>
-    <button type="button" onclick="window.close()" class="bg-slate-700 hover:bg-slate-600 text-xs font-semibold px-3 py-1.5 rounded-sm">
-      Tutup
+    <button type="button" onclick="goBackToInputApp()" class="bg-slate-700 hover:bg-slate-600 text-xs font-semibold px-3 py-1.5 rounded-sm">
+      Kembali / Tutup
     </button>
   </header>
 
@@ -46,11 +46,16 @@
   <script>
     const TARGET_APP_ORIGIN = "*";
     const SCAN_COOLDOWN_MS = 1500;
+    const AUTO_RETURN_DELAY_MS = 600;
+
+    const urlParams = new URLSearchParams(window.location.search);
+    const returnAppUrl = urlParams.get("appUrl") || "";
 
     let html5QrCode = null;
     let availableCameras = [];
     let currentCameraIndex = 0;
     let isPausedForCooldown = false;
+    let isReturningToApp = false;
     let lastCode = "";
     let lastScanTime = 0;
     const channel = ("BroadcastChannel" in window) ? new BroadcastChannel("bbp_so_camera_channel") : null;
@@ -61,6 +66,31 @@
       box.className = isError
         ? "bg-red-950 border border-red-700 text-red-200 text-xs px-3 py-2 rounded-sm"
         : "bg-sky-950 border border-sky-700 text-sky-200 text-xs px-3 py-2 rounded-sm";
+    }
+
+    function goBackToInputApp() {
+      if (isReturningToApp) return;
+      isReturningToApp = true;
+
+      if (html5QrCode && html5QrCode.isScanning) {
+        html5QrCode.stop().catch(() => {});
+      }
+
+      if (window.opener && !window.opener.closed) {
+        try {
+          window.opener.focus();
+        } catch (err) {}
+        try {
+          window.close();
+          return;
+        } catch (err) {}
+      }
+
+      if (returnAppUrl) {
+        window.location.href = returnAppUrl;
+      } else if (window.history.length > 1) {
+        window.history.back();
+      }
     }
 
     function sendScanToOpnameApp(decodedText) {
@@ -79,28 +109,22 @@
         timestamp: now
       };
 
-      let delivered = false;
       if (window.opener && !window.opener.closed) {
         try {
           window.opener.postMessage(payload, TARGET_APP_ORIGIN);
-          delivered = true;
         } catch (err) {}
       }
       if (channel) {
         channel.postMessage(payload);
-        delivered = true;
       }
       localStorage.setItem("bbp_so_last_camera_scan", JSON.stringify(payload));
-      setStatus(
-        delivered
-          ? `QR [${cleanCode}] terkirim ke aplikasi Stock Opname. Kembali ke tab Stock Opname untuk input Qty.`
-          : `QR [${cleanCode}] terbaca. Buka tab Stock Opname untuk memprosesnya.`,
-        false
-      );
+
+      setStatus(`QR [${cleanCode}] terbaca. Mengalihkan kembali ke menu input data...`, false);
+      setTimeout(goBackToInputApp, AUTO_RETURN_DELAY_MS);
     }
 
     function onScanSuccess(decodedText) {
-      if (isPausedForCooldown) return;
+      if (isPausedForCooldown || isReturningToApp) return;
       isPausedForCooldown = true;
       sendScanToOpnameApp(decodedText);
       setTimeout(() => { isPausedForCooldown = false; }, SCAN_COOLDOWN_MS);
@@ -144,12 +168,15 @@
     function resumeScanning() {
       lastCode = "";
       isPausedForCooldown = false;
+      isReturningToApp = false;
       setStatus("Siap memindai QR Code berikutnya.", false);
     }
 
     window.addEventListener("DOMContentLoaded", initCameraScanner);
     window.addEventListener("beforeunload", () => {
-      if (html5QrCode && html5QrCode.isScanning) html5QrCode.stop().catch(() => {});
+      if (html5QrCode && html5QrCode.isScanning) {
+        html5QrCode.stop().catch(() => {});
+      }
     });
   </script>
 </body>
