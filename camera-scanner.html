@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Live Camera QR Scanner - Stock Opname</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+</head>
+<body class="bg-[#1d2d3e] text-white min-h-screen flex flex-col">
+  <header class="bg-[#23303d] border-b border-slate-700 px-4 py-3 flex items-center justify-between">
+    <div>
+      <div class="text-[11px] uppercase tracking-wider text-sky-300 font-semibold">External Camera Bridge</div>
+      <h1 class="text-sm font-bold">Live Camera QR Scanner — Stock Opname</h1>
+    </div>
+    <button type="button" onclick="window.close()" class="bg-slate-700 hover:bg-slate-600 text-xs font-semibold px-3 py-1.5 rounded-sm">
+      Tutup
+    </button>
+  </header>
+
+  <main class="flex-1 p-4 max-w-xl w-full mx-auto flex flex-col gap-3">
+    <div id="statusBox" class="bg-sky-950 border border-sky-700 text-sky-200 text-xs px-3 py-2 rounded-sm">
+      Menyiapkan akses kamera...
+    </div>
+
+    <div class="bg-black border border-slate-600 rounded-sm overflow-hidden relative">
+      <div id="qr-reader" class="w-full min-h-[300px]"></div>
+    </div>
+
+    <div class="bg-[#2c3b49] border border-slate-600 p-3 rounded-sm flex flex-wrap items-center justify-between gap-2 text-xs">
+      <div>
+        <span class="text-slate-300">Hasil Scan Terakhir:</span>
+        <span id="lastScannedText" class="font-mono font-bold text-emerald-400 ml-1">-</span>
+      </div>
+      <div class="flex gap-2">
+        <button type="button" id="btnSwitchCam" onclick="switchCamera()" class="bg-[#0a6ed1] hover:bg-[#0854a0] px-3 py-1.5 rounded-sm font-semibold">
+          Ganti Kamera
+        </button>
+        <button type="button" onclick="resumeScanning()" class="bg-emerald-700 hover:bg-emerald-600 px-3 py-1.5 rounded-sm font-semibold">
+          Scan Lagi
+        </button>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const TARGET_APP_ORIGIN = "*";
+    const SCAN_COOLDOWN_MS = 1500;
+
+    let html5QrCode = null;
+    let availableCameras = [];
+    let currentCameraIndex = 0;
+    let isPausedForCooldown = false;
+    let lastCode = "";
+    let lastScanTime = 0;
+    const channel = ("BroadcastChannel" in window) ? new BroadcastChannel("bbp_so_camera_channel") : null;
+
+    function setStatus(msg, isError) {
+      const box = document.getElementById("statusBox");
+      box.innerText = msg;
+      box.className = isError
+        ? "bg-red-950 border border-red-700 text-red-200 text-xs px-3 py-2 rounded-sm"
+        : "bg-sky-950 border border-sky-700 text-sky-200 text-xs px-3 py-2 rounded-sm";
+    }
+
+    function sendScanToOpnameApp(decodedText) {
+      const cleanCode = String(decodedText || "").trim().toUpperCase();
+      if (!cleanCode) return;
+
+      const now = Date.now();
+      if (cleanCode === lastCode && (now - lastScanTime) < SCAN_COOLDOWN_MS) return;
+      lastCode = cleanCode;
+      lastScanTime = now;
+
+      document.getElementById("lastScannedText").innerText = cleanCode;
+      const payload = {
+        type: "BBP_SO_QR_SCANNED",
+        qrCode: cleanCode,
+        timestamp: now
+      };
+
+      let delivered = false;
+      if (window.opener && !window.opener.closed) {
+        try {
+          window.opener.postMessage(payload, TARGET_APP_ORIGIN);
+          delivered = true;
+        } catch (err) {}
+      }
+      if (channel) {
+        channel.postMessage(payload);
+        delivered = true;
+      }
+      localStorage.setItem("bbp_so_last_camera_scan", JSON.stringify(payload));
+      setStatus(
+        delivered
+          ? `QR [${cleanCode}] terkirim ke aplikasi Stock Opname. Kembali ke tab Stock Opname untuk input Qty.`
+          : `QR [${cleanCode}] terbaca. Buka tab Stock Opname untuk memprosesnya.`,
+        false
+      );
+    }
+
+    function onScanSuccess(decodedText) {
+      if (isPausedForCooldown) return;
+      isPausedForCooldown = true;
+      sendScanToOpnameApp(decodedText);
+      setTimeout(() => { isPausedForCooldown = false; }, SCAN_COOLDOWN_MS);
+    }
+
+    async function startCameraByIndex(index) {
+      if (!html5QrCode) html5QrCode = new Html5Qrcode("qr-reader");
+      if (html5QrCode.isScanning) await html5QrCode.stop();
+      const config = { fps: 12, qrbox: { width: 230, height: 230 }, aspectRatio: 1.0 };
+      const cam = availableCameras.length > 0 ? availableCameras[index].id : { facingMode: "environment" };
+      await html5QrCode.start(cam, config, onScanSuccess, () => {});
+      setStatus("Kamera aktif. Arahkan QR Code stiker ke dalam bingkai.", false);
+    }
+
+    async function initCameraScanner() {
+      try {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          throw new Error("Browser tidak mendukung akses kamera atau halaman tidak dibuka lewat HTTPS.");
+        }
+        availableCameras = (await Html5Qrcode.getCameras()) || [];
+        if (availableCameras.length > 1) {
+          const backIdx = availableCameras.findIndex(d => /back|rear|environment|belakang/i.test(d.label));
+          currentCameraIndex = backIdx >= 0 ? backIdx : 0;
+        } else {
+          currentCameraIndex = 0;
+        }
+        await startCameraByIndex(currentCameraIndex);
+      } catch (err) {
+        setStatus("Gagal membuka kamera: " + (err.message || err), true);
+      }
+    }
+
+    async function switchCamera() {
+      if (availableCameras.length <= 1) return setStatus("Hanya terdeteksi satu kamera.", false);
+      currentCameraIndex = (currentCameraIndex + 1) % availableCameras.length;
+      try { await startCameraByIndex(currentCameraIndex); } catch (err) {
+        setStatus("Gagal mengganti kamera: " + (err.message || err), true);
+      }
+    }
+
+    function resumeScanning() {
+      lastCode = "";
+      isPausedForCooldown = false;
+      setStatus("Siap memindai QR Code berikutnya.", false);
+    }
+
+    window.addEventListener("DOMContentLoaded", initCameraScanner);
+    window.addEventListener("beforeunload", () => {
+      if (html5QrCode && html5QrCode.isScanning) html5QrCode.stop().catch(() => {});
+    });
+  </script>
+</body>
+</html>
